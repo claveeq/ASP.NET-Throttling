@@ -13,36 +13,62 @@ namespace SampleThrottling.Controllers
     //[Authorize]
     public class ValuesController : ApiController
     {
-        //NEW GET
+        //Basic usage for throttling requests:
+        [ThrottleFilter()]
         [HttpGet]
         [Route("~/api/helloworld")]
         public HttpResponseMessage HelloWorld()
         {
-            var throttler = new Throttler("helloworld");
-
-            if (throttler.RequestShouldBeThrottled())
-                return Request.CreateResponse(
-                    (HttpStatusCode)429, "Too many requests");
-
             return Request.CreateResponse(HttpStatusCode.OK, "Hello World");
         }
-
+        //Allow more requests through, say 50 every 5 seconds:
+        [ThrottleFilter(RequestLimit: 50, TimeoutInSeconds: 5)]
         [HttpGet]
-        [Route("~/api/updatesomething")]
-        public HttpResponseMessage UpdateSomething()
+        [Route("~/api/allow-more")]
+        public HttpResponseMessage HelloWorld2()
         {
-            var throttler = new Throttler("updatesomething");
+            return Request.CreateResponse(HttpStatusCode.OK, "Hello World2");
+        }
 
-            if (throttler.RequestShouldBeThrottled())
-                return Request.CreateResponse(
-                    (HttpStatusCode)429, "Too many requests");
+        //Throttling a group of requests together:
+        [ThrottleFilter(ThrottleGroup: "updates")]
+        [HttpPost]
+        [Route("~/api/name")]
+        public HttpResponseMessage UpdateName()
+        {
+            // update name here
+            return Request.CreateResponse(HttpStatusCode.OK, "Name updated ok");
+        }
 
-            // update something here
+        [ThrottleFilter(ThrottleGroup: "updates")]
+        [HttpPost]
+        [Route("~/api/address")]
+        public HttpResponseMessage UpdateAddress()
+        {
+            // update address here
+            return Request.CreateResponse(HttpStatusCode.OK, "Address updated ok");
+        }
 
-            return Request.CreateResponse(HttpStatusCode.OK, "Data updated");
+        //Throttling based on IP address:
+        [ThrottleFilter(ThrottleGroup: "ipaddress")]
+        [HttpGet]
+        [Route("~/api/nameByIp")]
+        public HttpResponseMessage GetNameByIp(int id)
+        {
+            return Request.CreateResponse(HttpStatusCode.OK, "John Smith");
+        }
+
+        //Throttling based on Identity:
+        [ThrottleFilter(ThrottleGroup: "identity")]
+        [HttpGet]
+        [Route("~/api/name")]
+        public HttpResponseMessage GetName(int id)
+        {
+            return Request.CreateResponse(HttpStatusCode.OK, "Jane Doe");
         }
 
         // GET api/values
+        [ThrottleFilter()]
         public HttpResponseMessage Get()
         {
             return Request.CreateResponse(HttpStatusCode.OK, new string[] { "value1", "value2" });
@@ -72,22 +98,26 @@ namespace SampleThrottling.Controllers
 
     public class Throttler
     {
-        private int _requestLimit;
-        private int _timeoutInSeconds;
-        private string _key;
+        public int RequestLimit { get; private set; }
+        public int RequestsRemaining { get; private set; }
+        public DateTime WindowResetDate { get; private set; }
         private static ConcurrentDictionary<string, ThrottleInfo> _cache =
             new ConcurrentDictionary<string, ThrottleInfo>();
 
+        public string ThrottleGroup { get; set; }
+        private int _timeoutInSeconds;
+
         public Throttler(string key, int requestLimit = 5, int timeoutInSeconds = 10)
         {
-            _requestLimit = requestLimit;
+            RequestLimit = requestLimit;
             _timeoutInSeconds = timeoutInSeconds;
-            _key = key;
+            ThrottleGroup = key;
         }
 
-        public bool RequestShouldBeThrottled()
+        private ThrottleInfo getThrottleInfoFromCache()
         {
-            ThrottleInfo throttleInfo = _cache.ContainsKey(_key) ? _cache[_key] : null;
+            ThrottleInfo throttleInfo =
+                _cache.ContainsKey(ThrottleGroup) ? _cache[ThrottleGroup] : null;
 
             if (throttleInfo == null || throttleInfo.ExpiresAt <= DateTime.Now)
             {
@@ -98,11 +128,25 @@ namespace SampleThrottling.Controllers
                 };
             };
 
+            return throttleInfo;
+        }
+
+        public bool RequestShouldBeThrottled
+        {
+            get
+            {
+                ThrottleInfo throttleInfo = getThrottleInfoFromCache();
+                WindowResetDate = throttleInfo.ExpiresAt;
+                RequestsRemaining = Math.Max(RequestLimit - throttleInfo.RequestCount, 0);
+                return (throttleInfo.RequestCount > RequestLimit);
+            }
+        }
+
+        public void IncrementRequestCount()
+        {
+            ThrottleInfo throttleInfo = getThrottleInfoFromCache();
             throttleInfo.RequestCount++;
-
-            _cache[_key] = throttleInfo;
-
-            return (throttleInfo.RequestCount > _requestLimit);
+            _cache[ThrottleGroup] = throttleInfo;
         }
 
         private class ThrottleInfo
@@ -110,5 +154,25 @@ namespace SampleThrottling.Controllers
             public DateTime ExpiresAt { get; set; }
             public int RequestCount { get; set; }
         }
+
+        public Dictionary<string, string> GetRateLimitHeaders()
+        {
+            ThrottleInfo throttleInfo = getThrottleInfoFromCache();
+
+            int requestsRemaining = Math.Max(RequestLimit - throttleInfo.RequestCount, 0);
+
+            var headers = new Dictionary<string, string>();
+            headers.Add("X-RateLimit-Limit", RequestLimit.ToString());
+            headers.Add("X-RateLimit-Remaining", RequestsRemaining.ToString());
+            headers.Add("X-RateLimit-Reset", toUnixTime(throttleInfo.ExpiresAt).ToString());
+            return headers;
+        }
+
+        private long toUnixTime(DateTime date)
+        {
+            var epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            return Convert.ToInt64((date.ToUniversalTime() - epoch).TotalSeconds);
+        }
+
     }
 }
