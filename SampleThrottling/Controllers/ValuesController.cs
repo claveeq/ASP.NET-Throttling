@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -26,10 +27,19 @@ namespace SampleThrottling.Controllers
             return Request.CreateResponse(HttpStatusCode.OK, "Hello World");
         }
 
-        private class ThrottleInfo
+        [HttpGet]
+        [Route("~/api/updatesomething")]
+        public HttpResponseMessage UpdateSomething()
         {
-            public DateTime ExpiresAt { get; set; }
-            public int RequestCount { get; set; }
+            var throttler = new Throttler("updatesomething");
+
+            if (throttler.RequestShouldBeThrottled())
+                return Request.CreateResponse(
+                    (HttpStatusCode)429, "Too many requests");
+
+            // update something here
+
+            return Request.CreateResponse(HttpStatusCode.OK, "Data updated");
         }
 
         // GET api/values
@@ -65,6 +75,8 @@ namespace SampleThrottling.Controllers
         private int _requestLimit;
         private int _timeoutInSeconds;
         private string _key;
+        private static ConcurrentDictionary<string, ThrottleInfo> _cache =
+            new ConcurrentDictionary<string, ThrottleInfo>();
 
         public Throttler(string key, int requestLimit = 5, int timeoutInSeconds = 10)
         {
@@ -75,23 +87,20 @@ namespace SampleThrottling.Controllers
 
         public bool RequestShouldBeThrottled()
         {
-            ThrottleInfo throttleInfo = (ThrottleInfo)HttpRuntime.Cache[_key];
+            ThrottleInfo throttleInfo = _cache.ContainsKey(_key) ? _cache[_key] : null;
 
-            if (throttleInfo == null) throttleInfo = new ThrottleInfo
+            if (throttleInfo == null || throttleInfo.ExpiresAt <= DateTime.Now)
             {
-                ExpiresAt = DateTime.Now.AddSeconds(_timeoutInSeconds),
-                RequestCount = 0
+                throttleInfo = new ThrottleInfo
+                {
+                    ExpiresAt = DateTime.Now.AddSeconds(_timeoutInSeconds),
+                    RequestCount = 0
+                };
             };
 
             throttleInfo.RequestCount++;
 
-            HttpRuntime.Cache.Add(_key,
-          throttleInfo,
-          null,
-          throttleInfo.ExpiresAt,
-          Cache.NoSlidingExpiration,
-          CacheItemPriority.Normal,
-          null);
+            _cache[_key] = throttleInfo;
 
             return (throttleInfo.RequestCount > _requestLimit);
         }
