@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Web.Http;
 using Microsoft.Owin.Security.OAuth;
 using Newtonsoft.Json.Serialization;
+using WebApiThrottle;
 
 namespace SampleThrottling
 {
@@ -19,6 +20,19 @@ namespace SampleThrottling
 
             //For WebApi2 and JSON responses
             config.Formatters.Remove(config.Formatters.XmlFormatter);
+
+            //Nuget
+            config.MessageHandlers.Add(new ThrottlingHandler()
+            {
+                Policy = new ThrottlePolicy(perMinute: 10)
+                {
+                    IpThrottling = true,
+                    ClientThrottling = true,
+                    EndpointThrottling = true,
+                },
+                Repository = new MemoryCacheRepository()
+            });
+
 
             // Web API routes
             config.MapHttpAttributeRoutes();
